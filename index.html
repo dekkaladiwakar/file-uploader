@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>File Uploader</title>
+  </head>
+  <body>
+    <input type="file" id="file-input" />
+    <input type="number" id="num-threads" placeholder="Number of Threads" />
+    <button onclick="uploadFile()">Upload</button>
+    <button onclick="resetUpload()">Reset</button>
+
+    <progress id="upload-progress" max="100" value="0"></progress>
+    <div id="upload-status"></div>
+
+    <script src="script.js"></script>
+  </body>
+</html>
