@@ -2,18 +2,16 @@ package main
 
 import (
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"sync"
 
 	"github.com/rs/cors"
 )
 
-var mu sync.Mutex
-
-func UploadChunkHandler(w http.ResponseWriter, r *http.Request) {
+func UploadHandler(w http.ResponseWriter, r *http.Request) {
 	// Parse the multipart form
 	err := r.ParseMultipartForm(10 << 20) // limit your max memory size
 	if err != nil {
@@ -21,7 +19,7 @@ func UploadChunkHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get the chunk data, chunk number, total chunks, and file ID from the request
+	// Get the file data, and thread count from the request
 	file, _, err := r.FormFile("file")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -29,33 +27,64 @@ func UploadChunkHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	chunkNumber := r.FormValue("chunkNumber")
-	totalChunks := r.FormValue("totalChunks")
+	threadCountStr := r.FormValue("threads")
+	threadCount, err := strconv.Atoi(threadCountStr)
+	if err != nil || threadCount <= 0 {
+		http.Error(w, "Invalid thread count", http.StatusBadRequest)
+		return
+	}
+
 	fileID := r.FormValue("fileID")
 
-	// Create a unique filename for this chunk
-	chunkFilename := fmt.Sprintf("%s-chunk%s", fileID, chunkNumber)
-
-	// Protect concurrent writes with a mutex
-	mu.Lock()
-	defer mu.Unlock()
-
-	// Create a new file to store the chunk
-	dst, err := os.Create(chunkFilename)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	defer dst.Close()
-
-	// Write the chunk data to the file
-	_, err = io.Copy(dst, file)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if fileID == "" {
+		http.Error(w, "FileId is missing", http.StatusBadRequest)
 		return
 	}
 
-	fmt.Fprintf(w, "Chunk %s of %s for file %s uploaded successfully", chunkNumber, totalChunks, fileID)
+	// Get the file size to determine chunk size
+	fileSize := r.ContentLength
+	chunkSize := fileSize / int64(threadCount)
+
+	var wg sync.WaitGroup
+
+	for i := 0; i < threadCount; i++ {
+		wg.Add(1)
+
+		go func(threadNum int) {
+			defer wg.Done()
+
+			// Determine the byte range for this chunk
+			startByte := int64(threadNum) * chunkSize
+			endByte := startByte + chunkSize - 1
+			if threadNum == threadCount-1 {
+				endByte = fileSize // ensure the last chunk goes to the end of the file
+			}
+
+			// Create a unique filename for this chunk
+			chunkFilename := fmt.Sprintf("%s-chunk%d", fileID, threadNum)
+
+			// Create a new file to store the chunk
+			dst, err := os.Create(chunkFilename)
+			if err != nil {
+				log.Println(err) // Log the error and continue
+				return
+			}
+			defer dst.Close()
+
+			// Seek to the start byte and read the chunk data from the file
+			file.Seek(startByte, 0)
+			buf := make([]byte, endByte-startByte+1)
+			file.Read(buf)
+
+			// Write the chunk data to the file
+			dst.Write(buf)
+
+		}(i)
+	}
+
+	wg.Wait() // Wait for all goroutines to finish
+
+	fmt.Fprintf(w, "File %s uploaded and processed successfully with %d threads", fileID, threadCount)
 }
 
 func main() {
@@ -63,7 +92,7 @@ func main() {
 	router := http.NewServeMux()
 
 	// Register the chunk upload handler
-	router.HandleFunc("/upload", UploadChunkHandler)
+	router.HandleFunc("/upload", UploadHandler)
 
 	// Set up CORS middleware
 	c := cors.New(cors.Options{
@@ -75,5 +104,4 @@ func main() {
 	// Start the server with CORS middleware
 	handler := c.Handler(router)
 	http.ListenAndServe(":8080", handler)
-
 }
