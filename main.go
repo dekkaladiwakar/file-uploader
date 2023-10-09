@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -20,7 +21,7 @@ func UploadHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get the file data, and thread count from the request
-	file, _, err := r.FormFile("file")
+	file, fileHeader, err := r.FormFile("file")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -72,19 +73,67 @@ func UploadHandler(w http.ResponseWriter, r *http.Request) {
 			defer dst.Close()
 
 			// Seek to the start byte and read the chunk data from the file
-			file.Seek(startByte, 0)
+			sectionReader := io.NewSectionReader(file, startByte, endByte-startByte+1)
+
 			buf := make([]byte, endByte-startByte+1)
-			file.Read(buf)
+
+			_, err = sectionReader.Read(buf)
+			if err != nil && err != io.EOF {
+				log.Println(err)
+				return
+			}
 
 			// Write the chunk data to the file
-			dst.Write(buf)
+			_, err = dst.Write(buf)
+			if err != nil {
+				log.Println(err)
+				return
+			}
 
 		}(i)
 	}
 
 	wg.Wait() // Wait for all goroutines to finish
 
+	StitchFile(fileID, threadCount, fileHeader.Filename)
+
 	fmt.Fprintf(w, "File %s uploaded and processed successfully with %d threads", fileID, threadCount)
+}
+
+func StitchFile(fileID string, threadCount int, fileName string) error {
+	// Create a new file to hold the stitched-together contents
+	outputFile, err := os.Create(fileName)
+	if err != nil {
+		return err
+	}
+	defer outputFile.Close()
+
+	// Iterate through each chunk
+	for i := 0; i < threadCount; i++ {
+		// Open the chunk file
+		chunkFilename := fmt.Sprintf("%s-chunk%d", fileID, i)
+		chunkFile, err := os.Open(chunkFilename)
+		if err != nil {
+			return err
+		}
+
+		// Read the chunk data
+		buf := make([]byte, 1024) // Adjust buffer size as needed
+		for {
+			n, err := chunkFile.Read(buf)
+			if err != nil {
+				break // Stop at EOF
+			}
+			// Write the chunk data to the output file
+			outputFile.Write(buf[:n])
+		}
+		if err := chunkFile.Close(); err != nil {
+			log.Println(err)
+			return err
+		}
+	}
+
+	return nil
 }
 
 func main() {
